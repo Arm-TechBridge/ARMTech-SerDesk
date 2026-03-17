@@ -1,1 +1,33 @@
-
+services:
+  - type: web
+    name: itsm-flask-app
+    env: python
+    plan: free
+    region: oregon
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 2
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase: false
+        value: "<YOUR_SUPABASE_DATABASE_URL>"
+      - key: SECRET_KEY
+        fromDatabase: false
+        value: "<RANDOM_SECRET_KEY>"
+      - key: OPENAI_API_KEY
+        fromDatabase: false
+        value: "<OPENAI_API_KEY>"
+      - key: SMTP_HOST
+        fromDatabase: false
+        value: "<SMTP_HOST>"
+      - key: SMTP_PORT
+        fromDatabase: false
+        value: "587"
+      - key: SMTP_USER
+        fromDatabase: false
+        value: "<SMTP_USER>"
+      - key: SMTP_PASS
+        fromDatabase: false
+        value: "<SMTP_PASS>"
+      - key: APP_BASE_URL
+        fromDatabase: false
+        value: "https://your-render-app.onrender.com"
