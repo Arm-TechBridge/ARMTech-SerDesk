@@ -1,7 +1,10 @@
+# app.py
 import os
 import re
 import smtplib
 import datetime
+import json
+import tempfile
 from email.message import EmailMessage
 from functools import wraps
 from urllib.parse import urljoin
@@ -13,22 +16,42 @@ from flask import (
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
-import openai
+
+# Google Generative AI client
+try:
+    import google.generativeai as genai
+except Exception:
+    genai = None
 
 # --- Configuration from environment ---
 SECRET_KEY = os.environ.get("SECRET_KEY", os.urandom(24).hex())
 DATABASE_URL = os.environ.get("DATABASE_URL")  # Supabase Postgres connection string
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
+GOOGLE_APPLICATION_CREDENTIALS_JSON = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
 SMTP_HOST = os.environ.get("SMTP_HOST")
 SMTP_PORT = int(os.environ.get("SMTP_PORT", 587))
 SMTP_USER = os.environ.get("SMTP_USER")
 SMTP_PASS = os.environ.get("SMTP_PASS")
-APP_BASE_URL = os.environ.get("APP_BASE_URL", "https://your-render-app.onrender.com")  # used for invite links
+APP_BASE_URL = os.environ.get("APP_BASE_URL", "https://your-render-app.onrender.com")
 
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL environment variable is required (Supabase Postgres).")
 
-openai.api_key = OPENAI_API_KEY
+# Configure Google generative AI client
+if genai:
+    if GOOGLE_API_KEY:
+        genai.configure(api_key=GOOGLE_API_KEY)
+    elif GOOGLE_APPLICATION_CREDENTIALS_JSON:
+        try:
+            creds = json.loads(GOOGLE_APPLICATION_CREDENTIALS_JSON)
+            tf = tempfile.NamedTemporaryFile(delete=False, suffix=".json")
+            tf.write(json.dumps(creds).encode("utf-8"))
+            tf.flush()
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = tf.name
+            # genai will use ADC (Application Default Credentials)
+        except Exception:
+            # If JSON is invalid, leave unconfigured and log later
+            pass
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = SECRET_KEY
@@ -40,6 +63,7 @@ ts = URLSafeTimedSerializer(app.config["SECRET_KEY"])
 
 # --- Models ---
 class User(db.Model):
+    __tablename__ = "user"
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(320), unique=True, nullable=False)
     password_hash = db.Column(db.String(256), nullable=False)
@@ -62,8 +86,8 @@ class Ticket(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     title = db.Column(db.String(300), nullable=False)
     description = db.Column(db.Text)
-    status = db.Column(db.String(50), default="open")  # open, in_progress, closed
-    priority = db.Column(db.String(20), default="normal")  # low, normal, high
+    status = db.Column(db.String(50), default="open")
+    priority = db.Column(db.String(20), default="normal")
     created_by = db.Column(db.Integer, db.ForeignKey("user.id"))
     assigned_to = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
@@ -86,7 +110,7 @@ class CalendarEvent(db.Model):
     owner_id = db.Column(db.Integer, db.ForeignKey("user.id"))
     created_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
 
-# Create tables on startup (safe for simple deployments)
+# Create tables on startup
 with app.app_context():
     db.create_all()
 
@@ -149,7 +173,7 @@ def current_user():
         return None
     return User.query.get(uid)
 
-# --- Routes and Views ---
+# --- Base HTML with Tailwind (embedded) ---
 BASE_HTML = """
 <!doctype html>
 <html lang="en" class="h-full" data-theme="light">
@@ -203,7 +227,6 @@ BASE_HTML = """
   {{ content|safe }}
 </main>
 <script>
-  // Theme toggle with localStorage
   const body = document.getElementById('body');
   const toggle = document.getElementById('theme-toggle');
   function applyTheme(t){
@@ -234,12 +257,13 @@ def render_page(content, **context):
     user = current_user()
     return render_template_string(BASE_HTML, content=content, user=user, **context)
 
+# --- Routes ---
 @app.route("/")
 def index():
     content = """
     <div class="prose">
       <h1>Welcome to ITSM</h1>
-      <p>Simple production-ready ITSM app built with Flask, Tailwind, Supabase Postgres, and OpenAI integration.</p>
+      <p>Simple production-ready ITSM app built with Flask, Tailwind, Supabase Postgres, and Google Generative AI integration.</p>
       {% if not user %}
       <p><a class="text-blue-600" href="{{ url_for('signup') }}">Create an account</a> or <a class="text-blue-600" href="{{ url_for('login') }}">log in</a>.</p>
       {% else %}
@@ -381,11 +405,10 @@ def invite_user():
     invite = Invite(email=email, token=token, invited_by=inviter.id)
     db.session.add(invite)
     db.session.commit()
-    # Build accept URL
     accept_url = urljoin(APP_BASE_URL, url_for("accept_invite", token=token))
     body = f"You have been invited to join ITSM. Click to accept: {accept_url}\n\nThis link expires in 7 days."
     send_email(email, "You're invited to ITSM", body)
-    flash("Invite sent")
+    flash("Invite created (email sent if SMTP configured)")
     return redirect(url_for("admin_panel"))
 
 @app.route("/accept-invite/<token>", methods=["GET", "POST"])
@@ -407,7 +430,6 @@ def accept_invite(token):
             return redirect(url_for("login"))
         pw_hash = generate_password_hash(password)
         user = User(email=email, name=name, password_hash=pw_hash)
-        # If inviter wanted admin? For simplicity, admin flag is controlled by inviter via separate action.
         db.session.add(user)
         invite.accepted = True
         db.session.commit()
@@ -468,7 +490,6 @@ def create_ticket():
         t = Ticket(title=title, description=desc, priority=priority, created_by=user.id)
         db.session.add(t)
         db.session.commit()
-        # Notify admins via email (simple broadcast)
         admins = User.query.filter_by(is_admin=True).all()
         for a in admins:
             send_email(a.email, f"New ticket: {title}", f"A new ticket was created by {user.email}.\n\n{desc}")
@@ -494,7 +515,6 @@ def create_ticket():
 def view_ticket(ticket_id):
     t = Ticket.query.get_or_404(ticket_id)
     if request.method == "POST":
-        # update status/assign
         status = request.form.get("status")
         assigned = request.form.get("assigned_to")
         if status:
@@ -653,7 +673,7 @@ def create_event():
     """
     return render_page(content)
 
-# --- AI-powered search (OpenAI) ---
+# --- Google AI powered search ---
 @app.route("/ai-search", methods=["GET", "POST"])
 @login_required
 def ai_search():
@@ -661,10 +681,8 @@ def ai_search():
     query = ""
     if request.method == "POST":
         query = request.form.get("query", "").strip()
-        # Basic keyword search across tickets and notes
         tickets = Ticket.query.filter((Ticket.title.ilike(f"%{query}%")) | (Ticket.description.ilike(f"%{query}%"))).limit(10).all()
         notes = Note.query.filter((Note.title.ilike(f"%{query}%")) | (Note.content.ilike(f"%{query}%"))).limit(10).all()
-        # Build context for OpenAI
         snippets = []
         for t in tickets:
             snippets.append(f"TICKET: {t.title}\n{t.description}\nStatus: {t.status}\n")
@@ -677,22 +695,29 @@ def ai_search():
             "Provide a concise, actionable summary and suggested next steps (who to assign, priority, and a short reply to the user)."
         )
         try:
-            if not OPENAI_API_KEY:
-                result = "OpenAI API key not configured."
+            if not genai:
+                result = "Google Generative AI client not installed."
+            elif not (GOOGLE_API_KEY or GOOGLE_APPLICATION_CREDENTIALS_JSON):
+                result = "Google Generative AI not configured."
             else:
-                resp = openai.ChatCompletion.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role":"system","content":"You are a helpful ITSM assistant."},
-                        {"role":"user","content":prompt}
-                    ],
-                    max_tokens=400,
-                    temperature=0.2
+                # Use text-bison model
+                model = "models/text-bison-001"
+                resp = genai.generate_text(
+                    model=model,
+                    prompt=prompt,
+                    temperature=0.2,
+                    max_output_tokens=400
                 )
-                result = resp["choices"][0]["message"]["content"].strip()
+                # Extract text safely
+                if hasattr(resp, "text"):
+                    result = resp.text
+                elif isinstance(resp, dict) and "candidates" in resp and len(resp["candidates"])>0:
+                    result = resp["candidates"][0].get("content", "")
+                else:
+                    result = str(resp)
         except Exception as e:
-            app.logger.exception("OpenAI error")
-            result = f"OpenAI error: {e}"
+            app.logger.exception("Google Generative AI error")
+            result = f"Google Generative AI error: {e}"
     content = """
     <h2>AI Search</h2>
     <form method="post" class="space-y-3 max-w-2xl">
@@ -708,10 +733,9 @@ def ai_search():
     """
     return render_page(content, result=result, query=query)
 
-# --- Simple API endpoints for integrations ---
+# --- Simple API endpoint ---
 @app.route("/api/tickets", methods=["GET"])
 def api_tickets():
-    # Basic tokenless API for demo; in production add auth
     items = Ticket.query.order_by(Ticket.created_at.desc()).limit(100).all()
     out = []
     for t in items:
@@ -736,5 +760,4 @@ def not_found(e):
 
 # --- Run ---
 if __name__ == "__main__":
-    # For local development
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=os.environ.get("FLASK_DEBUG","0")=="1")
