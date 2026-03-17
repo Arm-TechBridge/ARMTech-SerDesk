@@ -1,0 +1,494 @@
+<!doctype html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>ITSM (GitHub Pages)</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body.dark { background:#0b1220; color:#e6eef8; }
+    .card { background: white; border-radius: 8px; padding: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+    body.dark .card { background: #0f1724; color: #e6eef8; box-shadow: none; }
+    pre { white-space: pre-wrap; word-break: break-word; }
+  </style>
+</head>
+<body class="min-h-screen antialiased" id="body">
+  <nav class="bg-gray-800 text-white p-4">
+    <div class="container mx-auto flex justify-between items-center">
+      <div class="flex items-center space-x-4">
+        <a href="#" id="brand" class="font-bold">ITSM (GitHub)</a>
+        <a href="#" class="text-sm nav-link" data-view="dashboard">Dashboard</a>
+        <a href="#" class="text-sm nav-link" data-view="tickets">Tickets</a>
+        <a href="#" class="text-sm nav-link" data-view="notes">Notes</a>
+        <a href="#" class="text-sm nav-link" data-view="calendar">Calendar</a>
+      </div>
+      <div class="flex items-center space-x-4">
+        <button id="theme-toggle" class="px-3 py-1 bg-gray-700 rounded">Toggle</button>
+        <span id="user-email" class="text-sm"></span>
+        <a href="#" id="auth-link" class="text-sm">Login</a>
+      </div>
+    </div>
+  </nav>
+
+  <main class="container mx-auto p-6" id="main">
+    <!-- content injected here -->
+  </main>
+
+  <footer class="text-center text-sm text-gray-500 p-4">
+    This ITSM demo runs entirely in your browser and can be hosted on GitHub Pages.
+  </footer>
+
+<script>
+/* -------------------------
+  Simple client-side ITSM app
+  Data stored in localStorage under key "itsm_data_v1"
+  Structure:
+  {
+    users: [{id,email,name,passwordHash,isAdmin,createdAt}],
+    invites: [{id,email,token,invitedBy,accepted,createdAt}],
+    tickets: [{id,title,description,status,priority,createdBy,assignedTo,createdAt,updatedAt}],
+    notes: [{id,title,content,ownerId,createdAt,updatedAt}],
+    events: [{id,title,description,start,end,ownerId,createdAt}]
+  }
+------------------------- */
+
+const STORAGE_KEY = "itsm_data_v1";
+const SESSION_KEY = "itsm_session_v1";
+
+// Utilities
+function nowISO(){ return new Date().toISOString(); }
+function uid(prefix='id'){ return prefix + '_' + Math.random().toString(36).slice(2,10); }
+function loadData(){
+  const raw = localStorage.getItem(STORAGE_KEY);
+  if(!raw){
+    const base = { users:[], invites:[], tickets:[], notes:[], events:[] };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(base));
+    return base;
+  }
+  try { return JSON.parse(raw); } catch(e){ const base = { users:[], invites:[], tickets:[], notes:[], events:[] }; localStorage.setItem(STORAGE_KEY, JSON.stringify(base)); return base; }
+}
+function saveData(d){ localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); }
+function getSession(){ return JSON.parse(localStorage.getItem(SESSION_KEY) || "null"); }
+function setSession(s){ localStorage.setItem(SESSION_KEY, JSON.stringify(s)); updateUI(); }
+function clearSession(){ localStorage.removeItem(SESSION_KEY); updateUI(); }
+function hashSimple(s){ // not secure; only for demo
+  let h=0; for(let i=0;i<s.length;i++){ h=(h<<5)-h + s.charCodeAt(i); h |= 0; } return 'h'+Math.abs(h);
+}
+
+/* --- App state and helpers --- */
+let DATA = loadData();
+
+function ensureAdminExists(){
+  if(DATA.users.length===0){
+    const id = uid('user');
+    DATA.users.push({ id, email: "admin@example.com", name: "Admin", passwordHash: hashSimple("admin123"), isAdmin: true, createdAt: nowISO() });
+    saveData(DATA);
+  }
+}
+ensureAdminExists();
+
+function currentUser(){
+  const s = getSession();
+  if(!s) return null;
+  return DATA.users.find(u=>u.id===s.userId) || null;
+}
+
+/* --- Rendering helpers --- */
+function navTo(view, opts={}){
+  renderView(view, opts);
+  history.pushState({view}, "", "#"+view);
+}
+window.addEventListener('popstate', (e)=>{ const v = (location.hash||'#dashboard').slice(1) || 'dashboard'; renderView(v); });
+
+function updateUI(){
+  const u = currentUser();
+  document.getElementById('user-email').textContent = u ? u.email : '';
+  document.getElementById('auth-link').textContent = u ? 'Logout' : 'Login';
+  document.getElementById('auth-link').onclick = (e)=>{
+    e.preventDefault();
+    if(u){ clearSession(); navTo('index'); } else { navTo('login'); }
+  };
+}
+updateUI();
+
+/* --- Views --- */
+function renderView(view, opts={}){
+  const main = document.getElementById('main');
+  const u = currentUser();
+  if(view==='index'){ main.innerHTML = `<div class="card"><h1 class="text-2xl font-bold">Welcome to ITSM (GitHub Pages)</h1><p class="mt-2">This demo stores data in your browser. Use <strong>/signup</strong> to create an account or sign in with <strong>admin@example.com / admin123</strong>.</p></div>`; return; }
+  if(view==='signup'){
+    main.innerHTML = `
+      <div class="card max-w-md mx-auto">
+        <h2 class="text-xl font-semibold">Sign up</h2>
+        <form id="signup-form" class="mt-4 space-y-3">
+          <input name="name" placeholder="Full name" class="w-full p-2 border rounded" />
+          <input name="email" placeholder="Email" class="w-full p-2 border rounded" required />
+          <input name="password" placeholder="Password" type="password" class="w-full p-2 border rounded" required />
+          <button class="px-4 py-2 bg-blue-600 text-white rounded">Create account</button>
+        </form>
+      </div>`;
+    document.getElementById('signup-form').onsubmit = (e)=>{
+      e.preventDefault();
+      const f = e.target;
+      const email = f.email.value.trim().toLowerCase();
+      if(DATA.users.find(x=>x.email===email)){ alert('Email already registered'); return; }
+      const id = uid('user');
+      DATA.users.push({ id, email, name: f.name.value.trim(), passwordHash: hashSimple(f.password.value), isAdmin:false, createdAt: nowISO() });
+      saveData(DATA);
+      setSession({ userId: id });
+      navTo('dashboard');
+    };
+    return;
+  }
+  if(view==='login'){
+    main.innerHTML = `
+      <div class="card max-w-md mx-auto">
+        <h2 class="text-xl font-semibold">Login</h2>
+        <form id="login-form" class="mt-4 space-y-3">
+          <input name="email" placeholder="Email" class="w-full p-2 border rounded" required />
+          <input name="password" placeholder="Password" type="password" class="w-full p-2 border rounded" required />
+          <button class="px-4 py-2 bg-green-600 text-white rounded">Login</button>
+        </form>
+      </div>`;
+    document.getElementById('login-form').onsubmit = (e)=>{
+      e.preventDefault();
+      const f = e.target;
+      const email = f.email.value.trim().toLowerCase();
+      const user = DATA.users.find(x=>x.email===email && x.passwordHash===hashSimple(f.password.value));
+      if(!user){ alert('Invalid credentials'); return; }
+      setSession({ userId: user.id });
+      navTo('dashboard');
+    };
+    return;
+  }
+  if(!u){ navTo('login'); return; }
+
+  // Authenticated views
+  if(view==='dashboard'){
+    const open = DATA.tickets.filter(t=>t.status==='open').length;
+    const my = DATA.tickets.filter(t=>t.createdBy===u.id || t.assignedTo===u.id).length;
+    const notes = DATA.notes.filter(n=>n.ownerId===u.id).length;
+    const events = DATA.events.filter(e=>e.ownerId===u.id).length;
+    main.innerHTML = `
+      <div class="grid md:grid-cols-4 gap-4">
+        <div class="card">Open tickets: <strong>${open}</strong></div>
+        <div class="card">My tickets: <strong>${my}</strong></div>
+        <div class="card">Notes: <strong>${notes}</strong></div>
+        <div class="card">Events: <strong>${events}</strong></div>
+      </div>
+      <div class="mt-6 card">
+        <h3 class="font-semibold">Quick actions</h3>
+        <div class="mt-3">
+          <button class="px-3 py-2 bg-blue-600 text-white rounded" onclick="navTo('create_ticket')">Create Ticket</button>
+          <button class="px-3 py-2 bg-gray-600 text-white rounded ml-2" onclick="navTo('tickets')">View Tickets</button>
+        </div>
+      </div>`;
+    return;
+  }
+
+  if(view==='tickets'){
+    const q = opts.q || '';
+    const items = DATA.tickets.filter(t => !q || t.title.toLowerCase().includes(q.toLowerCase()) || (t.description||'').toLowerCase().includes(q.toLowerCase()));
+    main.innerHTML = `
+      <div class="flex justify-between items-center">
+        <h2 class="text-xl font-semibold">Tickets</h2>
+        <button class="px-3 py-2 bg-blue-600 text-white rounded" onclick="navTo('create_ticket')">New Ticket</button>
+      </div>
+      <div class="mt-3">
+        <form id="ticket-search" class="flex space-x-2">
+          <input name="q" placeholder="Search tickets" value="${q}" class="p-2 border rounded w-1/2" />
+          <button class="px-3 py-1 bg-gray-600 text-white rounded">Search</button>
+          <button type="button" class="ml-2 px-3 py-1 text-blue-600" onclick="navTo('ai_search')">AI Search</button>
+        </form>
+      </div>
+      <ul class="mt-4 space-y-3">${items.map(t=>`<li class="p-3 card"><a href="#" onclick="navTo('view_ticket',{id:'${t.id}'})" class="font-semibold">${escapeHtml(t.title)}</a><div class="text-sm text-gray-600">Status: ${t.status} | Priority: ${t.priority}</div></li>`).join('')}</ul>
+    `;
+    document.getElementById('ticket-search').onsubmit = (e)=>{ e.preventDefault(); const q = e.target.q.value; navTo('tickets',{q}); };
+    return;
+  }
+
+  if(view==='create_ticket'){
+    main.innerHTML = `
+      <div class="card max-w-2xl mx-auto">
+        <h2 class="text-xl font-semibold">Create Ticket</h2>
+        <form id="create-ticket-form" class="mt-4 space-y-3">
+          <input name="title" placeholder="Title" class="w-full p-2 border rounded" required />
+          <textarea name="description" placeholder="Description" class="w-full p-2 border rounded" rows="6"></textarea>
+          <select name="priority" class="p-2 border rounded">
+            <option value="low">Low</option><option value="normal" selected>Normal</option><option value="high">High</option>
+          </select>
+          <button class="px-4 py-2 bg-blue-600 text-white rounded">Create</button>
+        </form>
+      </div>`;
+    document.getElementById('create-ticket-form').onsubmit = (e)=>{
+      e.preventDefault();
+      const f = e.target;
+      const id = uid('ticket');
+      DATA.tickets.push({ id, title: f.title.value.trim(), description: f.description.value.trim(), status:'open', priority: f.priority.value, createdBy: u.id, assignedTo: null, createdAt: nowISO(), updatedAt: nowISO() });
+      saveData(DATA);
+      alert('Ticket created (stored locally)');
+      navTo('tickets');
+    };
+    return;
+  }
+
+  if(view==='view_ticket'){
+    const t = DATA.tickets.find(x=>x.id===opts.id);
+    if(!t){ main.innerHTML = `<div class="card">Ticket not found</div>`; return; }
+    const users = DATA.users;
+    main.innerHTML = `
+      <div class="card max-w-2xl mx-auto">
+        <h2 class="text-xl font-semibold">${escapeHtml(t.title)}</h2>
+        <div class="text-sm text-gray-600">Created: ${t.createdAt} | Status: ${t.status}</div>
+        <p class="mt-3">${escapeHtml(t.description||'')}</p>
+        <form id="update-ticket" class="mt-4 space-y-2">
+          <label>Status</label>
+          <select name="status" class="p-2 border rounded">
+            <option value="open" ${t.status==='open'?'selected':''}>Open</option>
+            <option value="in_progress" ${t.status==='in_progress'?'selected':''}>In Progress</option>
+            <option value="closed" ${t.status==='closed'?'selected':''}>Closed</option>
+          </select>
+          <label>Assign to</label>
+          <select name="assigned_to" class="p-2 border rounded">
+            <option value="">Unassigned</option>
+            ${users.map(us=>`<option value="${us.id}" ${t.assignedTo===us.id?'selected':''}>${escapeHtml(us.email)}</option>`).join('')}
+          </select>
+          <button class="px-3 py-2 bg-green-600 text-white rounded">Save</button>
+        </form>
+      </div>`;
+    document.getElementById('update-ticket').onsubmit = (e)=>{
+      e.preventDefault();
+      const f = e.target;
+      t.status = f.status.value;
+      t.assignedTo = f.assigned_to.value || null;
+      t.updatedAt = nowISO();
+      saveData(DATA);
+      alert('Ticket updated');
+      navTo('tickets');
+    };
+    return;
+  }
+
+  if(view==='notes'){
+    const items = DATA.notes.filter(n=>n.ownerId===u.id);
+    main.innerHTML = `
+      <div class="flex justify-between items-center">
+        <h2 class="text-xl font-semibold">Notes</h2>
+        <button class="px-3 py-2 bg-blue-600 text-white rounded" onclick="navTo('create_note')">New Note</button>
+      </div>
+      <ul class="mt-4 space-y-3">${items.map(n=>`<li class="p-3 card"><a href="#" onclick="navTo('view_note',{id:'${n.id}'})" class="font-semibold">${escapeHtml(n.title||'(untitled)')}</a><div class="text-sm text-gray-600">${n.updatedAt}</div></li>`).join('')}</ul>
+    `;
+    return;
+  }
+
+  if(view==='create_note'){
+    main.innerHTML = `
+      <div class="card max-w-2xl mx-auto">
+        <h2 class="text-xl font-semibold">New Note</h2>
+        <form id="create-note" class="mt-4 space-y-3">
+          <input name="title" placeholder="Title" class="w-full p-2 border rounded" />
+          <textarea name="content" placeholder="Content" class="w-full p-2 border rounded" rows="8"></textarea>
+          <button class="px-3 py-2 bg-blue-600 text-white rounded">Save</button>
+        </form>
+      </div>`;
+    document.getElementById('create-note').onsubmit = (e)=>{
+      e.preventDefault();
+      const f = e.target;
+      const id = uid('note');
+      DATA.notes.push({ id, title: f.title.value.trim(), content: f.content.value.trim(), ownerId: u.id, createdAt: nowISO(), updatedAt: nowISO() });
+      saveData(DATA);
+      alert('Note saved');
+      navTo('notes');
+    };
+    return;
+  }
+
+  if(view==='view_note'){
+    const n = DATA.notes.find(x=>x.id===opts.id);
+    if(!n){ main.innerHTML = `<div class="card">Note not found</div>`; return; }
+    if(n.ownerId !== u.id){ main.innerHTML = `<div class="card">Forbidden</div>`; return; }
+    main.innerHTML = `
+      <div class="card max-w-2xl mx-auto">
+        <h2 class="text-xl font-semibold">Edit Note</h2>
+        <form id="edit-note" class="mt-4 space-y-3">
+          <input name="title" value="${escapeHtml(n.title||'')}" class="w-full p-2 border rounded" />
+          <textarea name="content" class="w-full p-2 border rounded" rows="8">${escapeHtml(n.content||'')}</textarea>
+          <button class="px-3 py-2 bg-green-600 text-white rounded">Save</button>
+        </form>
+      </div>`;
+    document.getElementById('edit-note').onsubmit = (e)=>{
+      e.preventDefault();
+      const f = e.target;
+      n.title = f.title.value.trim(); n.content = f.content.value.trim(); n.updatedAt = nowISO();
+      saveData(DATA);
+      alert('Note updated'); navTo('notes');
+    };
+    return;
+  }
+
+  if(view==='calendar'){
+    const events = DATA.events.filter(ev=>ev.ownerId===u.id);
+    main.innerHTML = `
+      <div class="flex justify-between items-center">
+        <h2 class="text-xl font-semibold">Calendar</h2>
+        <button class="px-3 py-2 bg-blue-600 text-white rounded" onclick="navTo('create_event')">New Event</button>
+      </div>
+      <ul class="mt-4 space-y-3">${events.map(e=>`<li class="p-3 card"><div class="font-semibold">${escapeHtml(e.title)}</div><div class="text-sm text-gray-600">${e.start} — ${e.end}</div><div class="mt-2">${escapeHtml(e.description||'')}</div></li>`).join('')}</ul>
+    `;
+    return;
+  }
+
+  if(view==='create_event'){
+    main.innerHTML = `
+      <div class="card max-w-2xl mx-auto">
+        <h2 class="text-xl font-semibold">New Event</h2>
+        <form id="create-event" class="mt-4 space-y-3">
+          <input name="title" placeholder="Title" class="w-full p-2 border rounded" required />
+          <textarea name="description" placeholder="Description" class="w-full p-2 border rounded"></textarea>
+          <input name="start" placeholder="2026-03-17T15:00" class="w-full p-2 border rounded" required />
+          <input name="end" placeholder="2026-03-17T16:00" class="w-full p-2 border rounded" required />
+          <button class="px-3 py-2 bg-blue-600 text-white rounded">Create</button>
+        </form>
+      </div>`;
+    document.getElementById('create-event').onsubmit = (e)=>{
+      e.preventDefault();
+      const f = e.target;
+      try{
+        const start = new Date(f.start.value); const end = new Date(f.end.value);
+        if(isNaN(start)||isNaN(end)){ throw new Error('Invalid date'); }
+        const id = uid('ev');
+        DATA.events.push({ id, title: f.title.value.trim(), description: f.description.value.trim(), start: start.toISOString(), end: end.toISOString(), ownerId: u.id, createdAt: nowISO() });
+        saveData(DATA);
+        alert('Event created'); navTo('calendar');
+      }catch(err){ alert('Invalid date format. Use ISO format like 2026-03-17T15:00'); }
+    };
+    return;
+  }
+
+  if(view==='admin'){
+    if(!u.isAdmin){ main.innerHTML = `<div class="card">Forbidden: Admins only</div>`; return; }
+    const invitesHtml = DATA.invites.slice().reverse().map(inv=>`<li class="py-1">${escapeHtml(inv.email)} - ${inv.accepted ? 'Accepted' : 'Pending'} - Token: <code>${escapeHtml(inv.token)}</code></li>`).join('');
+    const usersHtml = DATA.users.slice().reverse().map(us=>`<li class="py-1">${escapeHtml(us.email)} - ${us.isAdmin ? 'Admin' : 'User'}</li>`).join('');
+    main.innerHTML = `
+      <div class="grid md:grid-cols-2 gap-6">
+        <div class="card">
+          <h3 class="font-semibold">Invite user</h3>
+          <form id="invite-form" class="mt-2 space-y-2">
+            <input name="email" placeholder="Email to invite" class="w-full p-2 border rounded" required />
+            <label class="flex items-center space-x-2"><input type="checkbox" name="grant_admin" /> <span>Grant admin (manual)</span></label>
+            <button class="px-3 py-2 bg-blue-600 text-white rounded">Create Invite</button>
+          </form>
+          <h4 class="mt-4">Recent invites</h4>
+          <ul>${invitesHtml}</ul>
+        </div>
+        <div class="card">
+          <h3 class="font-semibold">Users</h3>
+          <ul>${usersHtml}</ul>
+        </div>
+      </div>`;
+    document.getElementById('invite-form').onsubmit = (e)=>{
+      e.preventDefault();
+      const email = e.target.email.value.trim().toLowerCase();
+      if(!email.match(/[^@]+@[^@]+\.[^@]+/)){ alert('Invalid email'); return; }
+      const token = uid('inv');
+      DATA.invites.push({ id: uid('invrow'), email, token, invitedBy: u.id, accepted: false, createdAt: nowISO() });
+      saveData(DATA);
+      alert('Invite created. Copy the token and share it with the invitee. They can open Accept Invite and paste the token.');
+      renderView('admin');
+    };
+    return;
+  }
+
+  if(view==='accept_invite'){
+    main.innerHTML = `
+      <div class="card max-w-md mx-auto">
+        <h2 class="text-xl font-semibold">Accept Invite</h2>
+        <form id="accept-invite" class="mt-4 space-y-3">
+          <input name="token" placeholder="Invite token" class="w-full p-2 border rounded" required />
+          <input name="name" placeholder="Full name" class="w-full p-2 border rounded" />
+          <input name="password" placeholder="Password" type="password" class="w-full p-2 border rounded" required />
+          <button class="px-3 py-2 bg-blue-600 text-white rounded">Accept Invite</button>
+        </form>
+      </div>`;
+    document.getElementById('accept-invite').onsubmit = (e)=>{
+      e.preventDefault();
+      const f = e.target; const token = f.token.value.trim();
+      const inv = DATA.invites.find(x=>x.token===token && !x.accepted);
+      if(!inv){ alert('Invalid or already used token'); return; }
+      if(DATA.users.find(x=>x.email===inv.email)){ alert('Account already exists for this email'); return; }
+      const id = uid('user');
+      DATA.users.push({ id, email: inv.email, name: f.name.value.trim(), passwordHash: hashSimple(f.password.value), isAdmin: false, createdAt: nowISO() });
+      inv.accepted = true; saveData(DATA);
+      setSession({ userId: id });
+      alert('Account created from invite'); navTo('dashboard');
+    };
+    return;
+  }
+
+  if(view==='ai_search'){
+    main.innerHTML = `
+      <div class="card max-w-2xl mx-auto">
+        <h2 class="text-xl font-semibold">AI Search (local)</h2>
+        <form id="ai-form" class="mt-4 space-y-3">
+          <input name="query" placeholder="Ask about tickets, notes, or incidents" class="w-full p-2 border rounded" />
+          <button class="px-3 py-2 bg-indigo-600 text-white rounded">Search</button>
+        </form>
+        <div id="ai-result" class="mt-4"></div>
+      </div>`;
+    document.getElementById('ai-form').onsubmit = (e)=>{
+      e.preventDefault();
+      const q = e.target.query.value.trim();
+      const tickets = DATA.tickets.filter(t=>t.title.toLowerCase().includes(q.toLowerCase()) || (t.description||'').toLowerCase().includes(q.toLowerCase()));
+      const notes = DATA.notes.filter(n=>n.title.toLowerCase().includes(q.toLowerCase()) || (n.content||'').toLowerCase().includes(q.toLowerCase()));
+      const snippets = [];
+      tickets.slice(0,6).forEach(t=>snippets.push(`TICKET: ${t.title}\n${t.description||''}\nStatus: ${t.status}`));
+      notes.slice(0,6).forEach(n=>snippets.push(`NOTE: ${n.title}\n${n.content||''}`));
+      const ctx = snippets.join("\n\n") || "No direct matches found in tickets or notes.";
+      const summary = localAISummarize(q, ctx);
+      document.getElementById('ai-result').innerHTML = `<div class="card"><h3 class="font-semibold">AI Result</h3><pre class="mt-2">${escapeHtml(summary)}</pre></div>`;
+    };
+    return;
+  }
+
+  // default
+  main.innerHTML = `<div class="card">View not found</div>`;
+}
+
+/* --- Local AI summarizer (simple heuristic) --- */
+function localAISummarize(query, context){
+  // Very small, deterministic summarizer: extract sentences containing keywords and produce a short recommendation.
+  const keywords = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const lines = context.split(/\n/).filter(Boolean);
+  const hits = lines.filter(l => keywords.some(k=>l.toLowerCase().includes(k))).slice(0,6);
+  const sample = hits.length ? hits.join("\n") : lines.slice(0,6).join("\n");
+  // Build a short actionable summary
+  let assign = "No specific assignee suggested.";
+  if(/urgent|high|critical/.test(query.toLowerCase())) assign = "Recommend high priority and immediate assignment to an admin.";
+  const summary = `Query: ${query}\n\nContext snippets:\n${sample}\n\nSuggested next steps:\n- ${assign}\n- Add internal note and assign to appropriate team member.\n- Reply to requester with a short status update.`;
+  return summary;
+}
+
+/* --- Small helpers --- */
+function escapeHtml(s){ if(!s) return ''; return String(s).replace(/[&<>"']/g, function(m){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]); }); }
+
+/* --- Theme toggle --- */
+const body = document.getElementById('body');
+const toggle = document.getElementById('theme-toggle');
+function applyTheme(t){ if(t==='dark'){ document.documentElement.classList.add('dark'); body.classList.add('dark'); } else { document.documentElement.classList.remove('dark'); body.classList.remove('dark'); } }
+const savedTheme = localStorage.getItem('itsm_theme') || 'light';
+applyTheme(savedTheme);
+toggle.addEventListener('click', ()=>{ const cur = localStorage.getItem('itsm_theme') || 'light'; const next = cur==='light' ? 'dark' : 'light'; localStorage.setItem('itsm_theme', next); applyTheme(next); });
+
+/* --- Initial wiring --- */
+document.querySelectorAll('.nav-link').forEach(a=>a.addEventListener('click', (e)=>{ e.preventDefault(); const v = a.getAttribute('data-view'); navTo(v); }));
+document.getElementById('brand').addEventListener('click', (e)=>{ e.preventDefault(); navTo('index'); });
+updateUI();
+const initial = (location.hash||'#dashboard').slice(1) || 'dashboard';
+renderView(initial);
+
+/* Expose navTo for inline handlers */
+window.navTo = navTo;
+window.renderView = renderView;
+</script>
+</body>
+</html>
