@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: itsm-flask-app
+    name: itsm-flask-googleai
     env: python
     plan: free
     region: oregon
@@ -13,9 +13,12 @@ services:
       - key: SECRET_KEY
         fromDatabase: false
         value: "<RANDOM_SECRET_KEY>"
-      - key: OPENAI_API_KEY
+      - key: GOOGLE_API_KEY
         fromDatabase: false
-        value: "<OPENAI_API_KEY>"
+        value: "<OPTIONAL_GOOGLE_API_KEY>"
+      - key: GOOGLE_APPLICATION_CREDENTIALS_JSON
+        fromDatabase: false
+        value: "<OPTIONAL_SERVICE_ACCOUNT_JSON_CONTENT>"
       - key: SMTP_HOST
         fromDatabase: false
         value: "<SMTP_HOST>"
